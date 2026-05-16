@@ -7,6 +7,11 @@ const app = express();
 
 app.use(express.json());
 
+app.get("/",(req,res)=>{
+
+  res.send("Hola, relojes");
+
+})
 
 app.get("/:id",(req,res)=>{
   const {id} = req.query;
@@ -15,10 +20,10 @@ app.get("/:id",(req,res)=>{
   //notificar con async al collector
   //llamar endpoint del otro servicio
 
-  res.json({response});
+  // res.json({response});
 
 })
 
 app.listen(PORT, ()=>{
-  console.log(`Public service listening on ${PORT}`);
+  console.log(`Public service listening on http://localhost:${PORT}`);
 })
