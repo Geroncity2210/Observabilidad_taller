@@ -2,9 +2,10 @@
   "name": "public-service",
   "version": "1.0.0",
   "description": "",
-  "main": "index.js",
+  "main": "app.js",
   "scripts": {
-    "test": "echo \"Error: no test specified\" && exit 1"
+    "test": "echo \"Error: no test specified\" && exit 1",
+    "dev": "nodemon app.js"
   },
   "keywords": [],
   "author": "",
@@ -14,5 +15,8 @@
     "dotenv": "17.4.2",
     "express": "5.2.1",
     "zod": "4.4.3"
+  },
+  "devDependencies": {
+    "nodemon": "3.1.14"
   }
 }
