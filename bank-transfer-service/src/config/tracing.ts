@@ -15,8 +15,8 @@ export const sdk = new NodeSDK({
     'service.name':    serviceName,
     'service.version': '1.0.0',
     'deployment.environment': process.env.NODE_ENV || 'development',
-  }),
-  traceExporter,
+  }) as any,
+  traceExporter: traceExporter as any,
   instrumentations: [
     getNodeAutoInstrumentations({
       '@opentelemetry/instrumentation-fs': { enabled: false },
