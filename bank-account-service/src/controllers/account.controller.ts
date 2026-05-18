@@ -1,8 +1,11 @@
 import { Request, Response } from 'express';
 import { context, trace, SpanStatusCode } from '@opentelemetry/api';
+import { SeverityNumber } from '@opentelemetry/api-logs';
 import { pool } from '../config/database';
+import { getLogger } from '../config/tracing';
 
 const tracer = trace.getTracer('bank-account-service');
+const logger = getLogger('account-controller');
 
 interface TransferPayload {
   fromAccount: string;
@@ -11,9 +14,6 @@ interface TransferPayload {
 }
 
 export class AccountController {
-  // ────────────────────────────────────────────────────────────────
-  // POST /api/v1/accounts/execute-transfer
-  // ────────────────────────────────────────────────────────────────
   async executeTransfer(req: Request, res: Response): Promise<void> {
     const span = tracer.startSpan('account.execute_transfer');
 
@@ -29,14 +29,10 @@ export class AccountController {
 
         await client.query('BEGIN');
 
-        // ── 1. Obtener cuenta origen con bloqueo pesimista ──────────
         const originResult = await client.query<{
           id: string; balance: string; owner: string;
         }>(
-          `SELECT id, balance, owner
-           FROM accounts
-           WHERE account_number = $1
-           FOR UPDATE`,
+          `SELECT id, balance, owner FROM accounts WHERE account_number = $1 FOR UPDATE`,
           [fromAccount]
         );
 
@@ -44,34 +40,54 @@ export class AccountController {
           await client.query('ROLLBACK');
           span.setAttribute('error.type', 'ACCOUNT_NOT_FOUND');
           span.setStatus({ code: SpanStatusCode.ERROR, message: 'Cuenta origen no encontrada' });
+
+          logger.emit({
+            severityNumber: SeverityNumber.WARN,
+            severityText: 'WARN',
+            body: `Transferencia rechazada: cuenta origen ${fromAccount} no encontrada`,
+            attributes: {
+              'transfer.from_account': fromAccount,
+              'error.type':            'ACCOUNT_NOT_FOUND',
+            },
+          });
+
           res.status(404).json({ error: `Cuenta origen ${fromAccount} no encontrada` });
           return;
         }
 
-        const originAccount = originResult.rows[0];
+        const originAccount  = originResult.rows[0];
         const currentBalance = parseFloat(originAccount.balance);
 
         span.setAttribute('account.owner',           originAccount.owner);
         span.setAttribute('account.current_balance', currentBalance);
 
-        // ── 2. Validar saldo suficiente ─────────────────────────────
         if (currentBalance < amount) {
           await client.query('ROLLBACK');
 
-          // Registrar el intento fallido en la tabla de transferencias
           await pool.query(
             `INSERT INTO transfers (from_account, to_account, amount, status, failure_reason)
              VALUES ($1, $2, $3, 'FAILED', $4)`,
             [fromAccount, toAccount, amount, 'Saldo insuficiente']
           );
 
-          span.setAttribute('error.type',          'INSUFFICIENT_FUNDS');
-          span.setAttribute('account.balance',      currentBalance);
-          span.setAttribute('transfer.amount_requested', amount);
+          span.setAttribute('error.type', 'INSUFFICIENT_FUNDS');
           span.setStatus({ code: SpanStatusCode.ERROR, message: 'Saldo insuficiente' });
 
+          logger.emit({
+            severityNumber: SeverityNumber.WARN,
+            severityText: 'WARN',
+            body: `Transferencia rechazada: saldo insuficiente en cuenta ${fromAccount}. Disponible: $${currentBalance}, solicitado: $${amount}`,
+            attributes: {
+              'transfer.from_account':     fromAccount,
+              'transfer.to_account':       toAccount,
+              'transfer.amount':           amount,
+              'account.available_balance': currentBalance,
+              'error.type':                'INSUFFICIENT_FUNDS',
+            },
+          });
+
           res.status(400).json({
-            error:           'Saldo insuficiente',
+            error:            'Saldo insuficiente',
             availableBalance: currentBalance,
             requestedAmount:  amount,
             shortBy:          amount - currentBalance,
@@ -79,7 +95,6 @@ export class AccountController {
           return;
         }
 
-        // ── 3. Verificar que la cuenta destino existe ───────────────
         const destResult = await client.query<{ id: string }>(
           `SELECT id FROM accounts WHERE account_number = $1`,
           [toAccount]
@@ -89,31 +104,34 @@ export class AccountController {
           await client.query('ROLLBACK');
           span.setAttribute('error.type', 'DEST_ACCOUNT_NOT_FOUND');
           span.setStatus({ code: SpanStatusCode.ERROR, message: 'Cuenta destino no encontrada' });
+
+          logger.emit({
+            severityNumber: SeverityNumber.WARN,
+            severityText: 'WARN',
+            body: `Transferencia rechazada: cuenta destino ${toAccount} no encontrada`,
+            attributes: {
+              'transfer.to_account': toAccount,
+              'error.type':          'DEST_ACCOUNT_NOT_FOUND',
+            },
+          });
+
           res.status(404).json({ error: `Cuenta destino ${toAccount} no encontrada` });
           return;
         }
 
-        // ── 4. Ejecutar la transferencia ────────────────────────────
         const updateOriginResult = await client.query<{ balance: string }>(
-          `UPDATE accounts
-           SET balance = balance - $1
-           WHERE account_number = $2
-           RETURNING balance`,
+          `UPDATE accounts SET balance = balance - $1 WHERE account_number = $2 RETURNING balance`,
           [amount, fromAccount]
         );
 
         await client.query(
-          `UPDATE accounts
-           SET balance = balance + $1
-           WHERE account_number = $2`,
+          `UPDATE accounts SET balance = balance + $1 WHERE account_number = $2`,
           [amount, toAccount]
         );
 
-        // ── 5. Registrar la transferencia exitosa ───────────────────
         const transferRecord = await client.query<{ id: string; created_at: Date }>(
           `INSERT INTO transfers (from_account, to_account, amount, status)
-           VALUES ($1, $2, $3, 'SUCCESS')
-           RETURNING id, created_at`,
+           VALUES ($1, $2, $3, 'SUCCESS') RETURNING id, created_at`,
           [fromAccount, toAccount, amount]
         );
 
@@ -123,17 +141,28 @@ export class AccountController {
         const transferId  = transferRecord.rows[0].id;
         const processedAt = transferRecord.rows[0].created_at;
 
-        span.setAttribute('transfer.id',          transferId);
-        span.setAttribute('account.new_balance',  newBalance);
+        span.setAttribute('transfer.id',         transferId);
+        span.setAttribute('account.new_balance', newBalance);
         span.setStatus({ code: SpanStatusCode.OK });
+
+        logger.emit({
+          severityNumber: SeverityNumber.INFO,
+          severityText: 'INFO',
+          body: `Transferencia ${transferId} ejecutada exitosamente: $${amount} de cuenta ${fromAccount} (propietario: ${originAccount.owner}) a ${toAccount}. Nuevo saldo: $${newBalance}`,
+          attributes: {
+            'transfer.id':           transferId,
+            'transfer.from_account': fromAccount,
+            'transfer.to_account':   toAccount,
+            'transfer.amount':       amount,
+            'account.owner':         originAccount.owner,
+            'account.new_balance':   newBalance,
+            'transfer.status':       'SUCCESS',
+          },
+        });
 
         console.log(`[MS-B] Transferencia exitosa: ${transferId} — $${amount} de ${fromAccount} a ${toAccount}`);
 
-        res.status(200).json({
-          transferId,
-          newBalance,
-          processedAt,
-        });
+        res.status(200).json({ transferId, newBalance, processedAt });
 
       } catch (err) {
         await client.query('ROLLBACK').catch(() => {});
@@ -141,8 +170,18 @@ export class AccountController {
 
         span.recordException(error);
         span.setStatus({ code: SpanStatusCode.ERROR, message: error.message });
-        console.error('[MS-B] Error al ejecutar transferencia:', error);
 
+        logger.emit({
+          severityNumber: SeverityNumber.ERROR,
+          severityText: 'ERROR',
+          body: `Error interno al ejecutar transferencia: ${error.message}`,
+          attributes: {
+            'error.message':   error.message,
+            'transfer.status': 'FAILED',
+          },
+        });
+
+        console.error('[MS-B] Error al ejecutar transferencia:', error);
         res.status(500).json({ error: 'Error interno del servidor' });
       } finally {
         client.release();
@@ -151,9 +190,6 @@ export class AccountController {
     });
   }
 
-  // ────────────────────────────────────────────────────────────────
-  // GET /api/v1/accounts/:accountNumber
-  // ────────────────────────────────────────────────────────────────
   async getAccount(req: Request, res: Response): Promise<void> {
     const span = tracer.startSpan('account.get_by_number');
 
@@ -165,9 +201,7 @@ export class AccountController {
         const result = await pool.query<{
           account_number: string; owner: string; balance: string; created_at: Date;
         }>(
-          `SELECT account_number, owner, balance, created_at
-           FROM accounts
-           WHERE account_number = $1`,
+          `SELECT account_number, owner, balance, created_at FROM accounts WHERE account_number = $1`,
           [accountNumber]
         );
 
