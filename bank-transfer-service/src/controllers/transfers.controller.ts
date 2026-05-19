@@ -44,10 +44,9 @@ export class TransferController {
           logger.emit({
             severityNumber: SeverityNumber.WARN,
             severityText: 'WARN',
-            body: `Transferencia rechazada: monto inválido $${body.amount}`,
+            body: 'Transferencia rechazada: monto inválido',
             attributes: {
               'transfer.from_account': body.fromAccount,
-              'transfer.amount':       body.amount,
               'error.type':            'INVALID_AMOUNT',
             },
           });
@@ -58,9 +57,8 @@ export class TransferController {
 
         span.setAttribute('transfer.from_account', body.fromAccount);
         span.setAttribute('transfer.to_account',   body.toAccount);
-        span.setAttribute('transfer.amount',        body.amount);
 
-        console.log(`[MS-A] Iniciando transferencia: ${body.fromAccount} → ${body.toAccount} por $${body.amount}`);
+        console.log(`[MS-A] Iniciando transferencia: ${body.fromAccount} → ${body.toAccount}`);
 
         const response = await axios.post(`${MS_B_URL}/api/v1/accounts/execute-transfer`, body, {
           headers: { 'Content-Type': 'application/json' },
@@ -73,13 +71,11 @@ export class TransferController {
         logger.emit({
           severityNumber: SeverityNumber.INFO,
           severityText: 'INFO',
-          body: `El cliente de la cuenta ${body.fromAccount} realizó una transferencia con id ${response.data.transferId} por $${body.amount} hacia ${body.toAccount}`,
+          body: `El cliente de la cuenta ${body.fromAccount} realizó una transferencia con id ${response.data.transferId} hacia ${body.toAccount}`,
           attributes: {
             'transfer.id':           response.data.transferId,
             'transfer.from_account': body.fromAccount,
             'transfer.to_account':   body.toAccount,
-            'transfer.amount':       body.amount,
-            'transfer.new_balance':  response.data.newBalance,
             'transfer.status':       'SUCCESS',
           },
         });
@@ -111,7 +107,6 @@ export class TransferController {
           attributes: {
             'transfer.from_account': (req.body as TransferRequest).fromAccount,
             'transfer.to_account':   (req.body as TransferRequest).toAccount,
-            'transfer.amount':       (req.body as TransferRequest).amount,
             'transfer.status':       'FAILED',
             'error.detail':          errorDetail,
             'error.status_code':     statusCode,
