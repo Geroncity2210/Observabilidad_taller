@@ -1,8 +1,10 @@
 import { NodeSDK } from '@opentelemetry/sdk-node';
 import { OTLPTraceExporter } from '@opentelemetry/exporter-trace-otlp-http';
 import { OTLPLogExporter } from '@opentelemetry/exporter-logs-otlp-http';
+import { OTLPMetricExporter } from '@opentelemetry/exporter-metrics-otlp-http';
+import { PeriodicExportingMetricReader } from '@opentelemetry/sdk-metrics';
 import { getNodeAutoInstrumentations } from '@opentelemetry/auto-instrumentations-node';
-import { Resource } from '@opentelemetry/resources';
+import { Resource, resourceFromAttributes } from '@opentelemetry/resources';
 import { SimpleSpanProcessor } from '@opentelemetry/sdk-trace-node';
 import { LoggerProvider, SimpleLogRecordProcessor } from '@opentelemetry/sdk-logs';
 import { logs } from '@opentelemetry/api-logs';
@@ -10,7 +12,7 @@ import { logs } from '@opentelemetry/api-logs';
 const collectorUrl = process.env.OTEL_COLLECTOR_URL || 'http://localhost:4318';
 const serviceName  = process.env.SERVICE_NAME || 'bank-account-service'; // cambiar en MS-B
 
-const resource = new Resource({
+const resource = resourceFromAttributes({
   'service.name':           serviceName,
   'service.version':        '1.0.0',
   'deployment.environment': process.env.NODE_ENV || 'development',
@@ -24,6 +26,10 @@ const logExporter = new OTLPLogExporter({
   url: `${collectorUrl}/v1/logs`,
 });
 
+const metricExporter = new OTLPMetricExporter({
+  url: `${collectorUrl}/v1/metrics`,
+});
+
 // ← LoggerProvider con processor en el constructor
 const loggerProvider = new LoggerProvider({
   resource: resource as any,
@@ -35,6 +41,9 @@ logs.setGlobalLoggerProvider(loggerProvider as any);
 export const sdk = new NodeSDK({
   resource: resource as any,
   spanProcessors: [new SimpleSpanProcessor(traceExporter as any)],
+  metricReader: new PeriodicExportingMetricReader({
+    exporter: metricExporter as any,
+  }),
   instrumentations: [
     getNodeAutoInstrumentations({
       '@opentelemetry/instrumentation-fs': { enabled: false },
